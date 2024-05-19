@@ -1,0 +1,80 @@
+import subprocess
+import pandas as pd
+from Bio import SeqIO
+
+def build_hmm(input_file, output_file):
+    hmmbuild_command = f"hmmbuild {output_file} {input_file}"
+    subprocess.call(hmmbuild_command, shell=True)
+    
+
+def score_sequence(sequence_file, hmm_file):
+    evalues = {}
+    sequences = {}
+    
+    result = subprocess.run(['hmmsearch', "--incE", "1000000", hmm_file, sequence_file], text=True, capture_output=True, check=True)
+    output = result.stdout
+    if "[No targets detected that satisfy reporting thresholds]" in output:
+        print("hhaaaa")
+        return [], [], []
+    lines = output.split("E-value")[3].split("Domain annotation for each sequence (and alignments):")[0].split("\n")
+    
+    lines = lines[2:-3]
+    evalues = []
+    scores = []
+    sequences = []
+    for line in lines:
+        evalues.append(float(line.split()[0]))
+        sequences.append(line.split()[-1])
+        scores.append(float(line.split()[1]))
+    return evalues, sequences, scores 
+
+def build_scoring_matrix(sequences_files, MSA_files, null_value = 0.5):
+    scoring_matrix = {}
+    HMM_files = []
+    scoring_dfs = []
+    for index, file in enumerate(MSA_files):
+        name = MSA_files[index].split(".")[0].split("_")[0] + ".hmm"
+        HMM_files.append(name)
+        scoring_matrix[name.split(".")[0]] = {}
+        build_hmm(MSA_files[index], HMM_files[index])
+    print(scoring_matrix.keys())
+    for hmm_index, hmm_file in enumerate(HMM_files):
+        print(hmm_file)
+        all_evalues = []
+        all_scores = []
+        row_names = []
+        labels = []
+        lengths = []
+        for seq_index, seq_file in enumerate(sequences_files):
+            print(seq_file)
+            evalues, seq_names, scores = score_sequence(seq_file, hmm_file)
+            all_evalues.extend(evalues)
+            row_names.extend(seq_names)
+            all_scores.extend(scores)   
+            ground_truth = [seq_file.split(".")[0]] * len(evalues)
+            labels.extend(ground_truth)
+            
+            for single_seq in SeqIO.parse(seq_file, "fasta"):
+                if single_seq.id in row_names:
+                    lengths.append(len(single_seq.seq))     
+
+        scoring_matrix[hmm_file.split(".")[0]]["Evalue"] = all_evalues
+        scoring_matrix[hmm_file.split(".")[0]][ " score"] = all_scores
+        scoring_matrix[hmm_file.split(".")[0]]["lengths"] = lengths
+        scoring_matrix[hmm_file.split(".")[0]]["labels"] = labels
+        scoring_matrix[hmm_file.split(".")[0]]["sequences"] = row_names
+        
+    for key, value in scoring_matrix.items():
+        temp_df = pd.DataFrame(value).set_index('sequences')  # set 'names' as index
+        temp_df.columns = [f'{col}{key}' for col in temp_df.columns]  # rename columns
+        scoring_dfs.append(temp_df)
+    scoring_data_frame = pd.concat(scoring_dfs, axis=1)
+
+# replace None values with np.nan
+    scoring_data_frame = scoring_data_frame.replace({None: null_value})
+    return scoring_data_frame
+
+MSA_files = ["Qa_MSA.fasta", "Qb_MSA.fasta", "Qc_MSA.fasta", "R_MSA.fasta"]
+sequences_files = ["Qa.fasta", "Qb.fasta", "Qc.fasta", "R.fasta"]
+matrix = build_scoring_matrix(sequences_files, MSA_files, 0.5)
+matrix.to_csv('input_ML_Matrix.csv')
